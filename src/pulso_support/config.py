@@ -21,6 +21,9 @@ class Settings:
     # turns are folded into a running summary and only the newest ones are kept.
     summarize_after_messages: int = 40
     keep_last_messages: int = 10
+    # API rate limit per thread: sustained messages per minute and burst size.
+    rate_limit_per_minute: float = 20
+    rate_limit_burst: int = 5
     # Tracing: append each run's spans to a JSONL file and/or export to OpenTelemetry.
     trace_file: str | None = None
     otel_enabled: bool = False
@@ -44,6 +47,10 @@ class Settings:
                 os.getenv("PULSO_SUMMARIZE_AFTER_MESSAGES", cls.summarize_after_messages)
             ),
             keep_last_messages=int(os.getenv("PULSO_KEEP_LAST_MESSAGES", cls.keep_last_messages)),
+            rate_limit_per_minute=float(
+                os.getenv("PULSO_RATE_LIMIT_PER_MINUTE", cls.rate_limit_per_minute)
+            ),
+            rate_limit_burst=int(os.getenv("PULSO_RATE_LIMIT_BURST", cls.rate_limit_burst)),
             trace_file=os.getenv("PULSO_TRACE_FILE") or None,
             otel_enabled=os.getenv("PULSO_OTEL_ENABLED", "").lower() in {"1", "true", "yes"},
             backend_db=os.getenv("PULSO_BACKEND_DB") or None,

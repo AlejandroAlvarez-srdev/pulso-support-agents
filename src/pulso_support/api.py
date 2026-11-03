@@ -6,15 +6,17 @@ uvicorn pulso_support.api:create_app --factory
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterator
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from pulso_support.config import Settings
 from pulso_support.graph import RefundDecision
+from pulso_support.ratelimit import RateLimiter
 from pulso_support.service import (
     ApprovalPendingError,
     NoPendingApprovalError,
@@ -53,15 +55,33 @@ def _sse(events: Iterator[dict[str, Any]]) -> Iterator[str]:
         yield f"event: {event['event']}\ndata: {json.dumps(event['data'])}\n\n"
 
 
-def create_app(service: SupportService | None = None) -> FastAPI:
+def create_app(
+    service: SupportService | None = None, rate_limiter: RateLimiter | None = None
+) -> FastAPI:
     service = service or SupportService.from_settings(Settings.from_env())
+    settings = service.settings
+    limiter = rate_limiter or RateLimiter(settings.rate_limit_per_minute, settings.rate_limit_burst)
     app = FastAPI(title="Pulso support agents", version="0.1.0")
+
+    def per_thread_limit(thread_id: str) -> None:
+        """Messages and streams on one thread share a token bucket."""
+        retry_after = limiter.acquire(thread_id)
+        if retry_after is not None:
+            raise HTTPException(
+                429,
+                "Too many messages on this thread; slow down.",
+                headers={"Retry-After": str(math.ceil(retry_after))},
+            )
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/threads/{thread_id}/messages", response_model=TurnOut)
+    @app.post(
+        "/threads/{thread_id}/messages",
+        response_model=TurnOut,
+        dependencies=[Depends(per_thread_limit)],
+    )
     def post_message(thread_id: str, body: MessageIn) -> TurnOut:
         try:
             return TurnOut.of(service.send(thread_id, body.message))
@@ -70,7 +90,7 @@ def create_app(service: SupportService | None = None) -> FastAPI:
                 409, "Thread is waiting for a refund approval; POST /resume first."
             ) from None
 
-    @app.post("/threads/{thread_id}/messages/stream")
+    @app.post("/threads/{thread_id}/messages/stream", dependencies=[Depends(per_thread_limit)])
     def stream_message(thread_id: str, body: MessageIn) -> StreamingResponse:
         """Server-sent events: route, token, tool_call, then done."""
         try:
