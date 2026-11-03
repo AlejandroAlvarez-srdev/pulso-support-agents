@@ -116,3 +116,32 @@ def test_sse_endpoint_rejects_paused_threads(make_service):
 
     response = client.post("/threads/s-5/messages/stream", json={"message": "hi"})
     assert response.status_code == 409
+
+
+def test_turn_completes_even_if_the_client_disconnects(make_service):
+    import time
+
+    from pulso_support.api import run_detached
+
+    service = make_service()
+    events = run_detached(service.stream("s-6", f"Where is order {fx.ORDER_IN_PROGRESS}?"))
+
+    assert next(events)["event"] == "route"
+    events.close()  # the client went away after the first event
+
+    deadline = time.monotonic() + 5
+    while not service.traces("s-6") and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert service.pending_approval("s-6") is None
+    assert "Ana Torres" in service.history("s-6")[-1]["content"]
+    assert service.traces("s-6")[0].root.status == "ok"
+
+
+def test_a_failing_turn_ends_the_stream_with_an_error_event():
+    from pulso_support.api import run_detached
+
+    def broken():
+        yield {"event": "route", "data": {"route": "refunds"}}
+        raise RuntimeError("backend exploded")
+
+    assert [e["event"] for e in run_detached(broken())] == ["route", "error"]

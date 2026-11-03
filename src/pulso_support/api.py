@@ -6,7 +6,10 @@ uvicorn pulso_support.api:create_app --factory
 from __future__ import annotations
 
 import json
+import logging
 import math
+import queue
+import threading
 from collections.abc import Iterator
 from typing import Any, Literal
 
@@ -48,6 +51,34 @@ class HistoryOut(BaseModel):
     messages: list[dict[str, str]]
     summary: str | None
     pending_approval: dict[str, Any] | None
+
+
+log = logging.getLogger(__name__)
+_END = object()
+
+
+def run_detached(events: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    """Drive the graph run in its own thread and relay its events.
+
+    If the client disconnects, the response stops reading but the turn still runs
+    to completion: the checkpoint never stays half-way through a turn and the
+    trace is still recorded. A crash becomes an `error` event, not a cut stream.
+    """
+    relay: queue.Queue[Any] = queue.Queue()
+
+    def pump() -> None:
+        try:
+            for event in events:
+                relay.put(event)
+        except Exception:
+            log.exception("streamed turn failed")
+            relay.put({"event": "error", "data": {"message": "The turn failed; try again."}})
+        finally:
+            relay.put(_END)
+
+    threading.Thread(target=pump, name="pulso-stream", daemon=True).start()
+    while (event := relay.get()) is not _END:
+        yield event
 
 
 def _sse(events: Iterator[dict[str, Any]]) -> Iterator[str]:
@@ -92,7 +123,7 @@ def create_app(
 
     @app.post("/threads/{thread_id}/messages/stream", dependencies=[Depends(per_thread_limit)])
     def stream_message(thread_id: str, body: MessageIn) -> StreamingResponse:
-        """Server-sent events: route, token, tool_call, then done."""
+        """Server-sent events: route, token, tool_call, then done (or error)."""
         try:
             events = service.stream(thread_id, body.message)
         except ApprovalPendingError:
@@ -100,7 +131,7 @@ def create_app(
                 409, "Thread is waiting for a refund approval; POST /resume first."
             ) from None
         return StreamingResponse(
-            _sse(events),
+            _sse(run_detached(events)),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
