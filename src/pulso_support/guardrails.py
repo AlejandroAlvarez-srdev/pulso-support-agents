@@ -57,3 +57,30 @@ def detect_injection(text: str) -> str | None:
     """Return the matched fragment if the text looks like a prompt-injection attempt."""
     match = _INJECTION_RE.search(text)
     return match.group(0) if match else None
+
+
+# Trailing text that could still grow into a phone number or email: a run of
+# phone characters (digits, spaces, punctuation) followed by the last partial word.
+_UNSAFE_TAIL = re.compile(r"[\d\s().+-]*\S*$")
+
+
+class StreamingRedactor:
+    """Applies `redact_pii` to a token stream without splitting a match.
+
+    Text is released only up to the start of the unsafe tail, so an email or
+    phone number is always redacted as a whole, at the cost of holding back the
+    last word (and any digits before it) until more text arrives.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = ""
+
+    def feed(self, token: str) -> str:
+        self._buffer += token
+        cut = _UNSAFE_TAIL.search(self._buffer).start()
+        ready, self._buffer = self._buffer[:cut], self._buffer[cut:]
+        return redact_pii(ready)
+
+    def flush(self) -> str:
+        ready, self._buffer = self._buffer, ""
+        return redact_pii(ready)

@@ -10,19 +10,20 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
+    AIMessageChunk,
     BaseMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.tools import BaseTool
 
 from pulso_support import prompts
@@ -112,13 +113,39 @@ class ScriptedSupportModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
+        return ChatResult(generations=[ChatGeneration(message=self._respond(messages))])
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        """Stream text word by word, and tool calls as a single chunk, like providers do."""
+        message = self._respond(messages)
+        if message.tool_calls:
+            chunk = AIMessageChunk(
+                content="",
+                tool_call_chunks=[
+                    {"name": c["name"], "args": json.dumps(c["args"]), "id": c["id"], "index": i}
+                    for i, c in enumerate(message.tool_calls)
+                ],
+            )
+            yield ChatGenerationChunk(message=chunk)
+            return
+        for token in re.findall(r"\s*\S+", message.text):
+            chunk = ChatGenerationChunk(message=AIMessageChunk(content=token))
+            if run_manager:
+                run_manager.on_llm_new_token(token, chunk=chunk)
+            yield chunk
+
+    def _respond(self, messages: list[BaseMessage]) -> AIMessage:
         if messages and messages[0].text == prompts.SUMMARIZER:
-            message = self._summarize_history(messages[-1].text)
-        elif not self.tool_names:
-            message = self._route(messages)
-        else:
-            message = self._act(messages)
-        return ChatResult(generations=[ChatGeneration(message=message)])
+            return self._summarize_history(messages[-1].text)
+        if not self.tool_names:
+            return self._route(messages)
+        return self._act(messages)
 
     # --- memory compaction ------------------------------------------------
 

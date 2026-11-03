@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -15,7 +16,8 @@ from langgraph.types import Command
 
 from pulso_support.backend import FakePulsoBackend
 from pulso_support.config import Settings
-from pulso_support.graph import RefundDecision, build_support_graph, recursion_limit
+from pulso_support.graph import AGENT_TOOLS, RefundDecision, build_support_graph, recursion_limit
+from pulso_support.guardrails import StreamingRedactor
 from pulso_support.ledger import SqliteRefundLedger
 from pulso_support.llm import create_chat_model
 
@@ -98,6 +100,43 @@ class SupportService:
             raise NoPendingApprovalError(thread_id)
         self.graph.invoke(Command(resume=decision.model_dump()), self._config(thread_id))
         return self._result(thread_id)
+
+    def stream(self, thread_id: str, text: str) -> Iterator[dict[str, Any]]:
+        """Run a turn, yielding events as they happen.
+
+        Events: ``route``, ``token`` (model text from agents, PII-redacted),
+        ``tool_call``, and a final ``done`` carrying the same payload as ``send``.
+        """
+        if self.pending_approval(thread_id):
+            raise ApprovalPendingError(thread_id)
+        return self._stream_events(thread_id, {"messages": [HumanMessage(text)]})
+
+    def _stream_events(self, thread_id: str, payload: Any) -> Iterator[dict[str, Any]]:
+        redactor = StreamingRedactor()
+        stream = self.graph.stream(
+            payload, self._config(thread_id), stream_mode=["updates", "messages"]
+        )
+        for mode, chunk in stream:
+            if mode == "messages":
+                message, meta = chunk
+                node = meta.get("langgraph_node")
+                is_agent_text = node in AGENT_TOOLS and isinstance(message, AIMessageChunk)
+                text = redactor.feed(message.text) if is_agent_text else ""
+                if text:
+                    yield {"event": "token", "data": {"node": node, "text": text}}
+                continue
+            for node, update in chunk.items():
+                update = update if isinstance(update, dict) else {}
+                if node in AGENT_TOOLS:
+                    if text := redactor.flush():
+                        yield {"event": "token", "data": {"node": node, "text": text}}
+                    for message in update.get("messages", []):
+                        for call in getattr(message, "tool_calls", []):
+                            data = {"node": node, "name": call["name"], "args": call["args"]}
+                            yield {"event": "tool_call", "data": data}
+                if update.get("route"):
+                    yield {"event": "route", "data": {"route": update["route"]}}
+        yield {"event": "done", "data": asdict(self._result(thread_id))}
 
     def history(self, thread_id: str) -> list[dict[str, str]]:
         values = self.graph.get_state(self._config(thread_id)).values

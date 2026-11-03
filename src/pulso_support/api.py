@@ -5,9 +5,12 @@ uvicorn pulso_support.api:create_app --factory
 
 from __future__ import annotations
 
+import json
+from collections.abc import Iterator
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from pulso_support.config import Settings
@@ -45,6 +48,11 @@ class HistoryOut(BaseModel):
     pending_approval: dict[str, Any] | None
 
 
+def _sse(events: Iterator[dict[str, Any]]) -> Iterator[str]:
+    for event in events:
+        yield f"event: {event['event']}\ndata: {json.dumps(event['data'])}\n\n"
+
+
 def create_app(service: SupportService | None = None) -> FastAPI:
     service = service or SupportService.from_settings(Settings.from_env())
     app = FastAPI(title="Pulso support agents", version="0.1.0")
@@ -61,6 +69,21 @@ def create_app(service: SupportService | None = None) -> FastAPI:
             raise HTTPException(
                 409, "Thread is waiting for a refund approval; POST /resume first."
             ) from None
+
+    @app.post("/threads/{thread_id}/messages/stream")
+    def stream_message(thread_id: str, body: MessageIn) -> StreamingResponse:
+        """Server-sent events: route, token, tool_call, then done."""
+        try:
+            events = service.stream(thread_id, body.message)
+        except ApprovalPendingError:
+            raise HTTPException(
+                409, "Thread is waiting for a refund approval; POST /resume first."
+            ) from None
+        return StreamingResponse(
+            _sse(events),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/threads/{thread_id}/resume", response_model=TurnOut)
     def resume(thread_id: str, decision: RefundDecision) -> TurnOut:
