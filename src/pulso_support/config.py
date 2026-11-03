@@ -21,6 +21,9 @@ class Settings:
     # turns are folded into a running summary and only the newest ones are kept.
     summarize_after_messages: int = 40
     keep_last_messages: int = 10
+    # Tracing: append each run's spans to a JSONL file and/or export to OpenTelemetry.
+    trace_file: str | None = None
+    otel_enabled: bool = False
     # SQLite file for the fake backend's refund ledger; None keeps it in memory.
     backend_db: str | None = None
     # Per-attempt timeout and attempt budget for backend calls made by tools.
@@ -41,6 +44,8 @@ class Settings:
                 os.getenv("PULSO_SUMMARIZE_AFTER_MESSAGES", cls.summarize_after_messages)
             ),
             keep_last_messages=int(os.getenv("PULSO_KEEP_LAST_MESSAGES", cls.keep_last_messages)),
+            trace_file=os.getenv("PULSO_TRACE_FILE") or None,
+            otel_enabled=os.getenv("PULSO_OTEL_ENABLED", "").lower() in {"1", "true", "yes"},
             backend_db=os.getenv("PULSO_BACKEND_DB") or None,
             tool_timeout_s=float(os.getenv("PULSO_TOOL_TIMEOUT_S", cls.tool_timeout_s)),
             tool_max_attempts=int(os.getenv("PULSO_TOOL_MAX_ATTEMPTS", cls.tool_max_attempts)),

@@ -23,7 +23,10 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["langchain-anthropic==1.7.9"]
 openai = ["langchain-openai==1.7.3"]
+otel = ["opentelemetry-api==1.45.2", "opentelemetry-sdk==1.45.2"]
 dev = [
+    "opentelemetry-api==1.45.2",
+    "opentelemetry-sdk==1.45.2",
     "pytest==9.2.0",
     "httpx==0.28.1",
     "ruff==0.17.3",

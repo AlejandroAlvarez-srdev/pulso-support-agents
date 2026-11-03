@@ -92,6 +92,14 @@ def create_app(service: SupportService | None = None) -> FastAPI:
         except NoPendingApprovalError:
             raise HTTPException(409, "Thread has no pending approval.") from None
 
+    @app.get("/threads/{thread_id}/traces")
+    def get_traces(thread_id: str) -> dict[str, Any]:
+        """Span trees of the most recent runs on this thread, newest last."""
+        return {
+            "thread_id": thread_id,
+            "traces": [t.to_json() for t in service.traces(thread_id)],
+        }
+
     @app.get("/threads/{thread_id}", response_model=HistoryOut)
     def get_thread(thread_id: str) -> HistoryOut:
         return HistoryOut(

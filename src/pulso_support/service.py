@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import deque
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
@@ -20,6 +22,16 @@ from pulso_support.graph import AGENT_TOOLS, RefundDecision, build_support_graph
 from pulso_support.guardrails import StreamingRedactor
 from pulso_support.ledger import SqliteRefundLedger
 from pulso_support.llm import create_chat_model
+from pulso_support.tracing import (
+    JsonlTraceExporter,
+    OpenTelemetryTraceExporter,
+    RunTracer,
+    Trace,
+    TraceExporter,
+    export_safely,
+)
+
+TRACES_KEPT_PER_THREAD = 20
 
 
 class ApprovalPendingError(Exception):
@@ -60,9 +72,16 @@ def turn_tool_calls(messages: list[BaseMessage]) -> list[dict[str, Any]]:
 
 
 class SupportService:
-    def __init__(self, graph: CompiledStateGraph, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        graph: CompiledStateGraph,
+        settings: Settings | None = None,
+        trace_exporters: list[TraceExporter] | None = None,
+    ) -> None:
         self.graph = graph
         self.settings = settings or Settings()
+        self.trace_exporters = trace_exporters or []
+        self._traces: dict[str, deque[Trace]] = {}
 
     @classmethod
     def from_settings(
@@ -77,13 +96,35 @@ class SupportService:
             settings,
             checkpointer=create_checkpointer(settings),
         )
-        return cls(graph, settings)
+        exporters: list[TraceExporter] = []
+        if settings.trace_file:
+            exporters.append(JsonlTraceExporter(settings.trace_file))
+        if settings.otel_enabled:
+            exporters.append(OpenTelemetryTraceExporter())
+        return cls(graph, settings, exporters)
 
-    def _config(self, thread_id: str) -> dict[str, Any]:
-        return {
+    def _config(self, thread_id: str, tracer: RunTracer | None = None) -> dict[str, Any]:
+        config: dict[str, Any] = {
             "configurable": {"thread_id": thread_id},
             "recursion_limit": recursion_limit(self.settings),
         }
+        if tracer is not None:
+            config["callbacks"] = [tracer]
+        return config
+
+    @contextmanager
+    def _traced(self, thread_id: str, operation: str) -> Iterator[RunTracer]:
+        tracer = RunTracer()
+        try:
+            yield tracer
+        finally:
+            trace = tracer.finish(thread_id, operation)
+            kept = self._traces.setdefault(thread_id, deque(maxlen=TRACES_KEPT_PER_THREAD))
+            kept.append(trace)
+            export_safely(self.trace_exporters, trace)
+
+    def traces(self, thread_id: str) -> list[Trace]:
+        return list(self._traces.get(thread_id, ()))
 
     def pending_approval(self, thread_id: str) -> dict[str, Any] | None:
         interrupts = self.graph.get_state(self._config(thread_id)).interrupts
@@ -92,13 +133,17 @@ class SupportService:
     def send(self, thread_id: str, text: str) -> TurnResult:
         if self.pending_approval(thread_id):
             raise ApprovalPendingError(thread_id)
-        self.graph.invoke({"messages": [HumanMessage(text)]}, self._config(thread_id))
+        with self._traced(thread_id, "message") as tracer:
+            self.graph.invoke({"messages": [HumanMessage(text)]}, self._config(thread_id, tracer))
         return self._result(thread_id)
 
     def resume(self, thread_id: str, decision: RefundDecision) -> TurnResult:
         if not self.pending_approval(thread_id):
             raise NoPendingApprovalError(thread_id)
-        self.graph.invoke(Command(resume=decision.model_dump()), self._config(thread_id))
+        with self._traced(thread_id, "resume") as tracer:
+            self.graph.invoke(
+                Command(resume=decision.model_dump()), self._config(thread_id, tracer)
+            )
         return self._result(thread_id)
 
     def stream(self, thread_id: str, text: str) -> Iterator[dict[str, Any]]:
@@ -112,9 +157,16 @@ class SupportService:
         return self._stream_events(thread_id, {"messages": [HumanMessage(text)]})
 
     def _stream_events(self, thread_id: str, payload: Any) -> Iterator[dict[str, Any]]:
+        with self._traced(thread_id, "stream") as tracer:
+            yield from self._graph_events(thread_id, payload, tracer)
+        yield {"event": "done", "data": asdict(self._result(thread_id))}
+
+    def _graph_events(
+        self, thread_id: str, payload: Any, tracer: RunTracer
+    ) -> Iterator[dict[str, Any]]:
         redactor = StreamingRedactor()
         stream = self.graph.stream(
-            payload, self._config(thread_id), stream_mode=["updates", "messages"]
+            payload, self._config(thread_id, tracer), stream_mode=["updates", "messages"]
         )
         for mode, chunk in stream:
             if mode == "messages":
@@ -136,7 +188,6 @@ class SupportService:
                             yield {"event": "tool_call", "data": data}
                 if update.get("route"):
                     yield {"event": "route", "data": {"route": update["route"]}}
-        yield {"event": "done", "data": asdict(self._result(thread_id))}
 
     def history(self, thread_id: str) -> list[dict[str, str]]:
         values = self.graph.get_state(self._config(thread_id)).values
