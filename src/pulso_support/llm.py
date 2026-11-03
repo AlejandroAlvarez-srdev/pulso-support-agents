@@ -67,12 +67,18 @@ def create_chat_model(settings: Settings) -> BaseChatModel:
     raise ValueError(f"Unknown PULSO_LLM_PROVIDER: {provider!r}")
 
 
+# Words that make an otherwise unmatched message a Pulso matter for a human.
+_DOMAIN_WORDS = ("order", "pulser", "pedido", "delivery", "payment", "charge", "account", "pulso")
+
+
 def classify_by_keywords(text: str) -> str:
     lowered = text.lower()
     for route, keywords in _ROUTE_KEYWORDS:
         if any(k in lowered for k in keywords):
             return route
-    return "escalation"
+    if UUID_RE.search(text) or any(w in lowered for w in _DOMAIN_WORDS):
+        return "escalation"
+    return "out_of_scope"
 
 
 class ScriptedSupportModel(BaseChatModel):

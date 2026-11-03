@@ -100,8 +100,8 @@ cases:
       tools: []
       reply_contains: ticket
 
-  - id: escalate-off-topic
+  - id: refuse-off-topic
     turns: ["Can you recommend a good mezcal bar in Condesa?"]
     expect:
-      route: escalation
+      route: out_of_scope
       tools: []

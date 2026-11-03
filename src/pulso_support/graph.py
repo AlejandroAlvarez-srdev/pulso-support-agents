@@ -33,7 +33,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 from pydantic import BaseModel
 
-from pulso_support import prompts
+from pulso_support import guardrails, prompts
 from pulso_support.backend import FakePulsoBackend
 from pulso_support.config import Settings
 from pulso_support.resilience import ResilientExecutor, RetryPolicy
@@ -47,7 +47,7 @@ from pulso_support.tools import (
     default_policies,
 )
 
-Route = Literal["order_status", "refunds", "pulser_ops", "escalation"]
+Route = Literal["order_status", "refunds", "pulser_ops", "escalation", "out_of_scope", "blocked"]
 
 AGENT_TOOLS: dict[str, tuple[str, ...]] = {
     "order_status": (GET_ORDER, GET_ASSIGNMENT),
@@ -58,7 +58,7 @@ AGENT_TOOLS: dict[str, tuple[str, ...]] = {
 
 class SupportState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
-    route: Route
+    route: Route | None
     # Agent invocations in the current user turn; reset by the router.
     steps: int
     ticket_id: str | None
@@ -103,9 +103,42 @@ def agent_view(messages: list[BaseMessage]) -> list[BaseMessage]:
     return past + list(messages[start:])
 
 
+def _last_human(messages: list[BaseMessage]) -> HumanMessage:
+    return next(m for m in reversed(messages) if isinstance(m, HumanMessage))
+
+
+def guard_input(state: SupportState) -> dict:
+    """Redact PII from the new user message in place; refuse injection attempts."""
+    human = _last_human(state["messages"])
+    redacted = HumanMessage(guardrails.redact_pii(human.text), id=human.id)
+    # route is cleared so a previous turn's value can't leak into this turn's edges.
+    update: dict[str, Any] = {"route": None}
+    if redacted.text != human.text:
+        update["messages"] = [redacted]
+    if guardrails.detect_injection(redacted.text):
+        refusal = AIMessage(guardrails.INJECTION_REFUSAL)
+        update.update(messages=[redacted, refusal], route="blocked", steps=0, ticket_id=None)
+    return update
+
+
+def out_of_scope(state: SupportState) -> dict:
+    return {"messages": [AIMessage(guardrails.OUT_OF_SCOPE_REFUSAL)]}
+
+
+def guard_output(state: SupportState) -> dict:
+    """Last line of defence: no email or phone number leaves in a reply."""
+    last = state["messages"][-1]
+    if not isinstance(last, AIMessage):
+        return {}
+    redacted = guardrails.redact_pii(last.text)
+    if redacted == last.text:
+        return {}
+    return {"messages": [AIMessage(redacted, id=last.id)]}
+
+
 def _make_router(model: BaseChatModel) -> Callable[[SupportState], dict]:
     def router(state: SupportState) -> dict:
-        last_human = next(m for m in reversed(state["messages"]) if isinstance(m, HumanMessage))
+        last_human = _last_human(state["messages"])
         reply = model.invoke([SystemMessage(prompts.ROUTER), HumanMessage(last_human.text)])
         return {"route": parse_route(reply.text), "steps": 0, "ticket_id": None}
 
@@ -222,9 +255,18 @@ def build_support_graph(
     all_tools = build_tools(backend, executor, default_policies(policy))
     graph = StateGraph(SupportState)
 
+    graph.add_node("guard_input", guard_input)
     graph.add_node("router", _make_router(model))
     graph.add_node("escalation", _make_escalation(backend, settings.max_agent_steps))
-    graph.add_edge(START, "router")
+    graph.add_node("out_of_scope", out_of_scope)
+    graph.add_node("guard_output", guard_output)
+
+    graph.add_edge(START, "guard_input")
+    graph.add_conditional_edges(
+        "guard_input",
+        lambda s: "guard_output" if s.get("route") == "blocked" else "router",
+        ["router", "guard_output"],
+    )
     graph.add_conditional_edges(
         "router",
         lambda s: s["route"],
@@ -239,11 +281,13 @@ def build_support_graph(
         graph.add_conditional_edges(
             name,
             _after_agent(tools_node, settings.max_agent_steps),
-            {tools_node: tools_node, "escalation": "escalation", END: END},
+            {tools_node: tools_node, "escalation": "escalation", "guard_output": "guard_output"},
         )
         graph.add_edge(tools_node, name)
 
-    graph.add_edge("escalation", END)
+    graph.add_edge("escalation", "guard_output")
+    graph.add_edge("out_of_scope", "guard_output")
+    graph.add_edge("guard_output", END)
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -251,7 +295,7 @@ def _after_agent(tools_node: str, max_steps: int) -> Callable[[SupportState], st
     def decide(state: SupportState) -> str:
         last = state["messages"][-1]
         if not (isinstance(last, AIMessage) and last.tool_calls):
-            return END
+            return "guard_output"
         # Cycle guard: an agent that keeps asking for tools is handed to a human.
         if state.get("steps", 0) >= max_steps:
             return "escalation"

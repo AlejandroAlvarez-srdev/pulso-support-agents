@@ -17,7 +17,8 @@ from pulso_support.llm import classify_by_keywords
         (f"My pulser is offline, please reassign {fx.ORDER_ASSIGNED_STUCK}", "pulser_ops"),
         (f"The pulser never showed up for {fx.ORDER_ASSIGNED_STUCK}", "pulser_ops"),
         ("I want to talk to a human", "escalation"),
-        ("Can you write me a poem about tacos?", "escalation"),
+        (f"Something is wrong with order {fx.ORDER_DELIVERED}", "escalation"),
+        ("Can you write me a poem about tacos?", "out_of_scope"),
     ],
 )
 def test_router_dispatches_to_the_right_agent(make_service, message, route):
