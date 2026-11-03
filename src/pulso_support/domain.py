@@ -91,6 +91,7 @@ class Refund(_Model):
     currency: str = "MXN"
     reason: str
     approved_by: str | None = None
+    idempotency_key: str | None = None
     issued_at: datetime
 
 

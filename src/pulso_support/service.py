@@ -16,6 +16,7 @@ from langgraph.types import Command
 from pulso_support.backend import FakePulsoBackend
 from pulso_support.config import Settings
 from pulso_support.graph import RefundDecision, build_support_graph, recursion_limit
+from pulso_support.ledger import SqliteRefundLedger
 from pulso_support.llm import create_chat_model
 
 
@@ -65,9 +66,12 @@ class SupportService:
     def from_settings(
         cls, settings: Settings, backend: FakePulsoBackend | None = None
     ) -> SupportService:
+        if backend is None:
+            ledger = SqliteRefundLedger(settings.backend_db) if settings.backend_db else None
+            backend = FakePulsoBackend.with_fixtures(ledger=ledger)
         graph = build_support_graph(
             create_chat_model(settings),
-            backend or FakePulsoBackend.with_fixtures(),
+            backend,
             settings,
             checkpointer=create_checkpointer(settings),
         )

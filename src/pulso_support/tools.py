@@ -21,16 +21,19 @@ GET_ASSIGNMENT = "get_assignment"
 ISSUE_REFUND = "issue_refund"
 REASSIGN_ORDER = "reassign_order"
 
+# Arguments the graph fills in itself; never accepted from the model.
+INJECTED_ARGS = frozenset({"approved_by", "idempotency_key"})
+
 
 def default_policies(base: RetryPolicy) -> dict[str, RetryPolicy]:
-    """Per-tool policies. Writes that are not idempotent get exactly one attempt:
-    retrying after a lost response could refund or reassign twice."""
-    single = replace(base, max_attempts=1)
+    """Per-tool policies. Non-idempotent writes get exactly one attempt: retrying
+    after a lost response would reassign twice."""
     return {
         GET_ORDER: base,
         GET_ASSIGNMENT: base,
-        ISSUE_REFUND: single,
-        REASSIGN_ORDER: single,
+        # Safe to retry: the graph always sends an idempotency key.
+        ISSUE_REFUND: base,
+        REASSIGN_ORDER: replace(base, max_attempts=1),
     }
 
 
@@ -84,13 +87,20 @@ def build_tools(
         amount_cents: int,
         reason: str,
         approved_by: Annotated[str | None, InjectedToolArg] = None,
+        idempotency_key: Annotated[str | None, InjectedToolArg] = None,
     ) -> dict:
         """Refund part or all of a paid order to the merchant. `amount_cents` is in
         the order currency's minor units (MXN centavos). Large refunds are paused
         for human approval before they execute."""
         refund, error = guarded(
             ISSUE_REFUND,
-            lambda: backend.issue_refund(order_id, amount_cents, reason, approved_by=approved_by),
+            lambda: backend.issue_refund(
+                order_id,
+                amount_cents,
+                reason,
+                approved_by=approved_by,
+                idempotency_key=idempotency_key,
+            ),
         )
         return error or refund.to_json()
 

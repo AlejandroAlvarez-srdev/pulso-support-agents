@@ -17,6 +17,8 @@ class Settings:
     llm_model: str | None = None
     # SQLite file for the checkpointer; None keeps threads in memory.
     checkpoint_db: str | None = None
+    # SQLite file for the fake backend's refund ledger; None keeps it in memory.
+    backend_db: str | None = None
     # Per-attempt timeout and attempt budget for backend calls made by tools.
     tool_timeout_s: float = 2.0
     tool_max_attempts: int = 3
@@ -31,6 +33,7 @@ class Settings:
             llm_provider=os.getenv("PULSO_LLM_PROVIDER", cls.llm_provider).lower(),
             llm_model=os.getenv("PULSO_LLM_MODEL") or None,
             checkpoint_db=os.getenv("PULSO_CHECKPOINT_DB") or None,
+            backend_db=os.getenv("PULSO_BACKEND_DB") or None,
             tool_timeout_s=float(os.getenv("PULSO_TOOL_TIMEOUT_S", cls.tool_timeout_s)),
             tool_max_attempts=int(os.getenv("PULSO_TOOL_MAX_ATTEMPTS", cls.tool_max_attempts)),
         )

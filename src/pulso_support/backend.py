@@ -27,6 +27,7 @@ from pulso_support.domain import (
     Refund,
     Vehicle,
 )
+from pulso_support.ledger import InMemoryRefundLedger, RefundLedger
 
 # Average urban speed per vehicle, used for ETA estimates.
 _SPEED_KMH = {Vehicle.BIKE: 14.0, Vehicle.MOTO: 24.0, Vehicle.CAR: 18.0}
@@ -63,11 +64,12 @@ class FakePulsoBackend:
         pulsers: Iterable[Pulser],
         assignments: Iterable[Assignment] = (),
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        ledger: RefundLedger | None = None,
     ) -> None:
         self._orders = {o.id: o for o in orders}
         self._pulsers = {p.id: p for p in pulsers}
         self._assignments = {a.order_id: a for a in assignments}
-        self._refunds: list[Refund] = []
+        self._ledger = ledger or InMemoryRefundLedger()
         self._tickets: dict[str, dict] = {}
         self._clock = clock
         self._lock = threading.Lock()
@@ -75,10 +77,18 @@ class FakePulsoBackend:
         self.events: list[Event] = []
 
     @classmethod
-    def with_fixtures(cls, clock: Callable[[], datetime] | None = None) -> FakePulsoBackend:
+    def with_fixtures(
+        cls,
+        clock: Callable[[], datetime] | None = None,
+        ledger: RefundLedger | None = None,
+    ) -> FakePulsoBackend:
         kwargs = {"clock": clock} if clock else {}
         return cls(
-            fixtures.seed_orders(), fixtures.seed_pulsers(), fixtures.seed_assignments(), **kwargs
+            fixtures.seed_orders(),
+            fixtures.seed_pulsers(),
+            fixtures.seed_assignments(),
+            ledger=ledger,
+            **kwargs,
         )
 
     # --- fault injection ---------------------------------------------------
@@ -143,10 +153,10 @@ class FakePulsoBackend:
         return assignment
 
     def refunded_cents(self, order_id: str) -> int:
-        return sum(r.amount_cents for r in self._refunds if r.order_id == order_id)
+        return sum(r.amount_cents for r in self._ledger.for_order(order_id))
 
     def refunds_for(self, order_id: str) -> list[Refund]:
-        return [r for r in self._refunds if r.order_id == order_id]
+        return self._ledger.for_order(order_id)
 
     @property
     def tickets(self) -> dict[str, dict]:
@@ -155,35 +165,64 @@ class FakePulsoBackend:
     # --- writes ----------------------------------------------------------
 
     def issue_refund(
-        self, order_id: str, amount_cents: int, reason: str, approved_by: str | None = None
+        self,
+        order_id: str,
+        amount_cents: int,
+        reason: str,
+        approved_by: str | None = None,
+        idempotency_key: str | None = None,
     ) -> Refund:
+        """Refund an order. Repeating a call with the same `idempotency_key` returns
+        the original refund instead of paying again."""
         fault = self._before("issue_refund")
-        with self._lock:
-            order = self._get_order(order_id)
-            if order.status not in REFUNDABLE_STATUSES:
-                raise PulsoBackendError(
-                    f"Order {order_id} is {order.status}; nothing has been charged yet."
+        with self._lock, self._ledger.transaction():
+            existing = self._ledger.by_key(idempotency_key) if idempotency_key else None
+            if existing is not None:
+                if (existing.order_id, existing.amount_cents) != (order_id, amount_cents):
+                    raise PulsoBackendError(
+                        "Idempotency key was already used for a different refund."
+                    )
+                refund = existing
+            else:
+                refund = self._new_refund(
+                    order_id, amount_cents, reason, approved_by, idempotency_key
                 )
-            if amount_cents <= 0:
-                raise PulsoBackendError("Refund amount must be positive.")
-            remaining = order.amount_cents - self.refunded_cents(order_id)
-            if amount_cents > remaining:
-                raise PulsoBackendError(
-                    f"Refund of {amount_cents} cents exceeds the refundable balance "
-                    f"of {remaining} cents."
-                )
-            refund = Refund(
-                id=f"rf_{len(self._refunds) + 1:04d}",
-                order_id=order_id,
-                amount_cents=amount_cents,
-                currency=order.currency,
-                reason=reason,
-                approved_by=approved_by,
-                issued_at=self._clock(),
-            )
-            self._refunds.append(refund)
-            self._emit("refund.issued", refund.to_json())
         self._after("issue_refund", fault)
+        return refund
+
+    def _new_refund(
+        self,
+        order_id: str,
+        amount_cents: int,
+        reason: str,
+        approved_by: str | None,
+        idempotency_key: str | None,
+    ) -> Refund:
+        order = self._get_order(order_id)
+        if order.status not in REFUNDABLE_STATUSES:
+            raise PulsoBackendError(
+                f"Order {order_id} is {order.status}; nothing has been charged yet."
+            )
+        if amount_cents <= 0:
+            raise PulsoBackendError("Refund amount must be positive.")
+        remaining = order.amount_cents - self.refunded_cents(order_id)
+        if amount_cents > remaining:
+            raise PulsoBackendError(
+                f"Refund of {amount_cents} cents exceeds the refundable balance "
+                f"of {remaining} cents."
+            )
+        refund = Refund(
+            id=self._ledger.next_id(),
+            order_id=order_id,
+            amount_cents=amount_cents,
+            currency=order.currency,
+            reason=reason,
+            approved_by=approved_by,
+            idempotency_key=idempotency_key,
+            issued_at=self._clock(),
+        )
+        self._ledger.add(refund)
+        self._emit("refund.issued", refund.to_json())
         return refund
 
     def reassign_order(self, order_id: str, reason: str) -> Assignment:

@@ -40,6 +40,7 @@ from pulso_support.resilience import ResilientExecutor, RetryPolicy
 from pulso_support.tools import (
     GET_ASSIGNMENT,
     GET_ORDER,
+    INJECTED_ARGS,
     ISSUE_REFUND,
     REASSIGN_ORDER,
     build_tools,
@@ -125,11 +126,15 @@ def _make_agent(
     return agent
 
 
-def _make_tool_node(
-    tools: dict[str, BaseTool], threshold_cents: int
-) -> Callable[[SupportState], dict]:
-    def run_tools(state: SupportState) -> dict:
+def refund_key(thread_id: str, tool_call_id: str) -> str:
+    """Stable across re-executions: both parts are stored in the checkpoint."""
+    return f"{thread_id}:{tool_call_id}"
+
+
+def _make_tool_node(tools: dict[str, BaseTool], threshold_cents: int) -> Callable[..., dict]:
+    def run_tools(state: SupportState, config: RunnableConfig) -> dict:
         calls = state["messages"][-1].tool_calls
+        thread_id = config.get("configurable", {}).get("thread_id", "")
 
         # Collect every approval before any side effect: on resume LangGraph re-runs
         # this node from the top, so nothing above this line may mutate the backend.
@@ -157,10 +162,13 @@ def _make_tool_node(
             elif (decision := decisions.get(call["id"])) and not decision.approved:
                 output = {"status": "denied", "reviewer": decision.reviewer, "note": decision.note}
             else:
-                args = dict(call["args"])
+                # The model cannot set injected arguments, even if it tries.
+                args = {k: v for k, v in call["args"].items() if k not in INJECTED_ARGS}
+                if call["name"] == ISSUE_REFUND:
+                    args["idempotency_key"] = refund_key(thread_id, call["id"])
                 if decision:
                     args["approved_by"] = decision.reviewer
-                output = tool.invoke(args)
+                output = tool.invoke(args, config)
             results.append(
                 ToolMessage(content=json.dumps(output), tool_call_id=call["id"], name=call["name"])
             )
