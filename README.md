@@ -1,4 +1,9 @@
-# pulso-support-agents
+<p align="center"><img src="assets/banner.svg" alt="pulso-support-agents" width="100%"></p>
+
+<p align="center"><img src="https://img.shields.io/badge/LangGraph-1C3C3C?style=for-the-badge&logo=langchain&logoColor=white" alt="LangGraph"> <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"> <img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI"> <img src="https://img.shields.io/badge/OpenTelemetry-000000?style=for-the-badge&logo=opentelemetry&logoColor=white" alt="OpenTelemetry"> <img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker"> <img src="https://img.shields.io/badge/GitHub_Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white" alt="GitHub Actions"> <img src="https://img.shields.io/badge/22_commits-6a178c?style=for-the-badge" alt="22 commits"></p>
+
+<h1 align="center">pulso-support-agents</h1>
+<!-- /header -->
 
 A multi-agent customer-support system for **Pulso** merchants and pulsers, built with
 [LangGraph](https://github.com/langchain-ai/langgraph). A router classifies each message and
@@ -20,6 +25,17 @@ scripted chat model stands in for the LLM in tests, evals and the demo. Point it
 Anthropic or OpenAI with two environment variables.
 
 > Pulso is a fictional company used to explore these patterns.
+
+## At a glance
+
+<table>
+  <tr>
+    <td align="center" width="25%"><b>117, fully offline</b><br>Tests</td>
+    <td align="center" width="25%"><b>31 cases · 9 categories</b><br>Evals</td>
+    <td align="center" width="25%"><b>PII redaction, injection refusal</b><br>Safety</td>
+    <td align="center" width="25%"><b>Checkpoints + idempotent refunds</b><br>Durability</td>
+  </tr>
+</table>
 
 ## Architecture
 
