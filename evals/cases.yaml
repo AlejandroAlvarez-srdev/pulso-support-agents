@@ -1,0 +1,107 @@
+# Each case runs on a fresh backend and thread. Expectations are checked on the
+# last user turn: the route chosen, the ordered tool calls the agents requested,
+# whether the run paused for refund approval and, optionally, reply text.
+# Order ids come from src/pulso_support/fixtures.py.
+
+cases:
+  - id: status-in-progress
+    turns: ["Where is my order 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5d02?"]
+    expect:
+      route: order_status
+      tools: [get_order, get_assignment]
+      reply_contains: Ana Torres
+
+  - id: status-eta-phrasing
+    turns: ["When will 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5d03 arrive?"]
+    expect:
+      route: order_status
+      tools: [get_order, get_assignment]
+
+  - id: status-unknown-order
+    turns: ["Track order 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5dff please"]
+    expect:
+      route: order_status
+      tools: [get_order, get_assignment]
+      reply_contains: couldn't find
+
+  - id: status-missing-order-id
+    turns: ["What's the status of my order?"]
+    expect:
+      route: order_status
+      tools: []
+      reply_contains: order ID
+
+  - id: refund-partial-under-threshold
+    turns: ["Refund 120 MXN on 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5d01, one taco order was missing"]
+    expect:
+      route: refunds
+      tools: [get_order, issue_refund]
+      interrupt: false
+      reply_contains: "$120.00 MXN"
+
+  - id: refund-full-over-threshold-approved
+    turns: ["The kit arrived broken, I want a refund for 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5d04"]
+    resume: {approved: true, reviewer: eval-bot}
+    expect:
+      route: refunds
+      tools: [get_order, issue_refund]
+      interrupt: true
+      reply_contains: has been issued
+
+  - id: refund-over-threshold-denied
+    turns: ["Customer was charged twice on 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5d06, refund it"]
+    resume: {approved: false, note: duplicate charge not found}
+    expect:
+      route: refunds
+      tools: [get_order, issue_refund]
+      interrupt: true
+      reply_contains: not approved
+
+  - id: refund-unpaid-order
+    turns: ["refund order 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5d05"]
+    expect:
+      route: refunds
+      tools: [get_order, issue_refund]
+      reply_contains: nothing has been charged
+
+  - id: refund-follow-up-uses-memory
+    turns:
+      - "Where is order 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5d01?"
+      - "The food was cold, can I get a $35 refund?"
+    expect:
+      route: refunds
+      tools: [get_order, issue_refund]
+      reply_contains: "$35.00 MXN"
+
+  - id: pulser-offline-reassign
+    turns: ["My pulser is offline, please reassign 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5d03"]
+    expect:
+      route: pulser_ops
+      tools: [reassign_order]
+      reply_contains: Diego Herrera
+
+  - id: pulser-no-show
+    turns: ["The pulser never showed up for 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5d03"]
+    expect:
+      route: pulser_ops
+      tools: [reassign_order]
+
+  - id: pulser-reassign-too-late
+    turns: ["Please reassign 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5d02 to another pulser"]
+    expect:
+      route: pulser_ops
+      tools: [reassign_order]
+      reply_contains: can no longer be reassigned
+
+  - id: escalate-explicit-human
+    turns: ["This is useless, let me talk to a human"]
+    expect:
+      route: escalation
+      tools: []
+      reply_contains: ticket
+
+  - id: escalate-off-topic
+    turns: ["Can you recommend a good mezcal bar in Condesa?"]
+    expect:
+      route: escalation
+      tools: []
