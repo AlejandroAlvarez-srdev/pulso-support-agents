@@ -46,6 +46,7 @@ filterwarnings = ["ignore::DeprecationWarning:langsmith.*"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]

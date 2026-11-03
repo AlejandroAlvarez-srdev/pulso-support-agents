@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff==0.17.3
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: pytest
+      - name: Evals (scripted model, must stay at 100%)
+        run: python -m pulso_support.evals --min-pass-rate 1.0 --json eval-report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval-report-${{ matrix.python-version }}
+          path: eval-report.json
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t pulso-support-agents .
+      - name: Smoke test the container
+        run: |
+          docker run -d --name pulso -p 8000:8000 pulso-support-agents
+          for i in $(seq 1 20); do curl -fs localhost:8000/healthz && break; sleep 1; done
+          curl -fs -X POST localhost:8000/threads/ci/messages \
+            -H 'content-type: application/json' \
+            -d '{"message":"Where is order 0b5e1c7a-2f43-4c8e-9a1d-6f2e3b4c5d02?"}' | tee /dev/stderr \
+            | grep -q '"route":"order_status"'
+          docker rm -f pulso
