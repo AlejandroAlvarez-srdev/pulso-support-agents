@@ -195,6 +195,11 @@ def _mxn(cents: int) -> str:
 
 
 def _summarize(results: dict[str, dict]) -> str:
+    if any(r.get("retryable") for r in results.values()):
+        return (
+            "Pulso's systems are temporarily unavailable, so I couldn't complete that. "
+            "Nothing was changed; please try again in a few minutes."
+        )
     parts: list[str] = []
     order = results.get(GET_ORDER)
     if order is not None:

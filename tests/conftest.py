@@ -24,13 +24,14 @@ def make_service(backend: FakePulsoBackend):
     from pulso_support.llm import ScriptedSupportModel
     from pulso_support.service import SupportService
 
-    def factory(model=None, settings: Settings | None = None, checkpointer=None):
+    def factory(model=None, settings: Settings | None = None, checkpointer=None, executor=None):
         settings = settings or Settings()
         graph = build_support_graph(
             model or ScriptedSupportModel(),
             backend,
             settings,
             checkpointer=checkpointer or InMemorySaver(),
+            executor=executor,
         )
         return SupportService(graph, settings)
 

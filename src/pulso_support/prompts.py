@@ -28,8 +28,12 @@ PULSER_OPS = """You are Pulso's pulser-operations agent. When a pulser is offlin
 cannot complete a pickup, call reassign_order with a short reason. Report the new pulser
 and ETA. If reassignment is not possible, explain why. If no order ID is given, ask for it."""
 
+TOOL_ERRORS = """
+Tool results may contain "error". If they also contain "retryable": true, Pulso's systems
+are temporarily down: say so, do not guess the missing data, and suggest trying again later."""
+
 AGENT_PROMPTS = {
-    "order_status": ORDER_STATUS,
-    "refunds": REFUNDS,
-    "pulser_ops": PULSER_OPS,
+    "order_status": ORDER_STATUS + TOOL_ERRORS,
+    "refunds": REFUNDS + TOOL_ERRORS,
+    "pulser_ops": PULSER_OPS + TOOL_ERRORS,
 }

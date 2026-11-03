@@ -1,16 +1,20 @@
 """LangChain tools the agents can call, bound to a Pulso backend instance.
 
-Tools never raise on business errors: they return ``{"error": ...}`` so the
-agent can explain the problem to the user instead of crashing the graph.
+Tools never raise: business errors and exhausted retries come back as
+``{"error": ...}`` so the agent can explain the problem to the user instead of
+crashing the graph. ``retryable: true`` marks infrastructure failures.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+from collections.abc import Callable
+from dataclasses import replace
+from typing import Annotated, Any
 
 from langchain_core.tools import BaseTool, InjectedToolArg, tool
 
 from pulso_support.backend import FakePulsoBackend, PulsoBackendError
+from pulso_support.resilience import BackendCallFailedError, ResilientExecutor, RetryPolicy
 
 GET_ORDER = "get_order"
 GET_ASSIGNMENT = "get_assignment"
@@ -18,24 +22,49 @@ ISSUE_REFUND = "issue_refund"
 REASSIGN_ORDER = "reassign_order"
 
 
-def build_tools(backend: FakePulsoBackend) -> dict[str, BaseTool]:
+def default_policies(base: RetryPolicy) -> dict[str, RetryPolicy]:
+    """Per-tool policies. Writes that are not idempotent get exactly one attempt:
+    retrying after a lost response could refund or reassign twice."""
+    single = replace(base, max_attempts=1)
+    return {
+        GET_ORDER: base,
+        GET_ASSIGNMENT: base,
+        ISSUE_REFUND: single,
+        REASSIGN_ORDER: single,
+    }
+
+
+def build_tools(
+    backend: FakePulsoBackend,
+    executor: ResilientExecutor | None = None,
+    policies: dict[str, RetryPolicy] | None = None,
+) -> dict[str, BaseTool]:
+    executor = executor or ResilientExecutor()
+    policies = policies or default_policies(RetryPolicy())
+
+    def guarded(name: str, fn: Callable[[], Any]) -> tuple[Any, dict | None]:
+        try:
+            return executor.call(name, fn, policies[name]), None
+        except PulsoBackendError as exc:
+            return None, {"error": str(exc)}
+        except BackendCallFailedError as exc:
+            return None, {"error": str(exc), "retryable": True}
+
     @tool(GET_ORDER)
     def get_order(order_id: str) -> dict:
         """Look up a Pulso order: status, amount, items, pickup/dropoff and how much
         has already been refunded. `order_id` is the order UUID."""
-        try:
-            order = backend.get_order(order_id)
-        except PulsoBackendError as exc:
-            return {"error": str(exc)}
+        order, error = guarded(GET_ORDER, lambda: backend.get_order(order_id))
+        if error:
+            return error
         return {**order.to_json(), "refundedCents": backend.refunded_cents(order_id)}
 
     @tool(GET_ASSIGNMENT)
     def get_assignment(order_id: str) -> dict:
         """Get the pulser currently assigned to an order, with their ETA in minutes."""
-        try:
-            assignment = backend.get_assignment(order_id)
-        except PulsoBackendError as exc:
-            return {"error": str(exc)}
+        assignment, error = guarded(GET_ASSIGNMENT, lambda: backend.get_assignment(order_id))
+        if error:
+            return error
         if assignment is None:
             return {"orderId": order_id, "assignment": None}
         pulser = backend.get_pulser(assignment.pulser_id)
@@ -59,20 +88,21 @@ def build_tools(backend: FakePulsoBackend) -> dict[str, BaseTool]:
         """Refund part or all of a paid order to the merchant. `amount_cents` is in
         the order currency's minor units (MXN centavos). Large refunds are paused
         for human approval before they execute."""
-        try:
-            refund = backend.issue_refund(order_id, amount_cents, reason, approved_by=approved_by)
-        except PulsoBackendError as exc:
-            return {"error": str(exc)}
-        return refund.to_json()
+        refund, error = guarded(
+            ISSUE_REFUND,
+            lambda: backend.issue_refund(order_id, amount_cents, reason, approved_by=approved_by),
+        )
+        return error or refund.to_json()
 
     @tool(REASSIGN_ORDER)
     def reassign_order(order_id: str, reason: str) -> dict:
         """Move an order that has not been picked up yet to a different available
         pulser. Use when the current pulser is offline, unresponsive or cannot make it."""
-        try:
-            assignment = backend.reassign_order(order_id, reason)
-        except PulsoBackendError as exc:
-            return {"error": str(exc)}
+        assignment, error = guarded(
+            REASSIGN_ORDER, lambda: backend.reassign_order(order_id, reason)
+        )
+        if error:
+            return error
         pulser = backend.get_pulser(assignment.pulser_id)
         return {**assignment.to_json(), "pulser": {"name": pulser.name, "vehicle": pulser.vehicle}}
 

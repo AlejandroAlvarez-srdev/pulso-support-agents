@@ -36,12 +36,14 @@ from pydantic import BaseModel
 from pulso_support import prompts
 from pulso_support.backend import FakePulsoBackend
 from pulso_support.config import Settings
+from pulso_support.resilience import ResilientExecutor, RetryPolicy
 from pulso_support.tools import (
     GET_ASSIGNMENT,
     GET_ORDER,
     ISSUE_REFUND,
     REASSIGN_ORDER,
     build_tools,
+    default_policies,
 )
 
 Route = Literal["order_status", "refunds", "pulser_ops", "escalation"]
@@ -205,9 +207,11 @@ def build_support_graph(
     backend: FakePulsoBackend,
     settings: Settings | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    executor: ResilientExecutor | None = None,
 ) -> CompiledStateGraph:
     settings = settings or Settings()
-    all_tools = build_tools(backend)
+    policy = RetryPolicy(max_attempts=settings.tool_max_attempts, timeout_s=settings.tool_timeout_s)
+    all_tools = build_tools(backend, executor, default_policies(policy))
     graph = StateGraph(SupportState)
 
     graph.add_node("router", _make_router(model))
