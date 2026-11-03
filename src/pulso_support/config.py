@@ -17,6 +17,10 @@ class Settings:
     llm_model: str | None = None
     # SQLite file for the checkpointer; None keeps threads in memory.
     checkpoint_db: str | None = None
+    # Memory compaction: once a thread holds more than this many messages, older
+    # turns are folded into a running summary and only the newest ones are kept.
+    summarize_after_messages: int = 40
+    keep_last_messages: int = 10
     # SQLite file for the fake backend's refund ledger; None keeps it in memory.
     backend_db: str | None = None
     # Per-attempt timeout and attempt budget for backend calls made by tools.
@@ -33,6 +37,10 @@ class Settings:
             llm_provider=os.getenv("PULSO_LLM_PROVIDER", cls.llm_provider).lower(),
             llm_model=os.getenv("PULSO_LLM_MODEL") or None,
             checkpoint_db=os.getenv("PULSO_CHECKPOINT_DB") or None,
+            summarize_after_messages=int(
+                os.getenv("PULSO_SUMMARIZE_AFTER_MESSAGES", cls.summarize_after_messages)
+            ),
+            keep_last_messages=int(os.getenv("PULSO_KEEP_LAST_MESSAGES", cls.keep_last_messages)),
             backend_db=os.getenv("PULSO_BACKEND_DB") or None,
             tool_timeout_s=float(os.getenv("PULSO_TOOL_TIMEOUT_S", cls.tool_timeout_s)),
             tool_max_attempts=int(os.getenv("PULSO_TOOL_MAX_ATTEMPTS", cls.tool_max_attempts)),

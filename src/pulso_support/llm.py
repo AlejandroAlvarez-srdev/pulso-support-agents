@@ -15,10 +15,17 @@ from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import BaseTool
 
+from pulso_support import prompts
 from pulso_support.config import Settings
 from pulso_support.tools import GET_ASSIGNMENT, GET_ORDER, ISSUE_REFUND, REASSIGN_ORDER
 
@@ -105,8 +112,38 @@ class ScriptedSupportModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        message = self._route(messages) if not self.tool_names else self._act(messages)
+        if messages and messages[0].text == prompts.SUMMARIZER:
+            message = self._summarize_history(messages[-1].text)
+        elif not self.tool_names:
+            message = self._route(messages)
+        else:
+            message = self._act(messages)
         return ChatResult(generations=[ChatGeneration(message=message)])
+
+    # --- memory compaction ------------------------------------------------
+
+    @staticmethod
+    def _summarize_history(transcript: str) -> AIMessage:
+        # Tool output also holds merchant and pulser UUIDs; only conversational lines
+        # (and the previous summary) name the orders the user cares about.
+        conversational = [
+            line
+            for line in transcript.splitlines()
+            if line.startswith(("Previous summary:", "user: ", "assistant"))
+        ]
+        found = UUID_RE.findall("\n".join(conversational))
+        order_ids = list(dict.fromkeys(m.lower() for m in found))
+        requests = [
+            line.removeprefix("user: ")[:120]
+            for line in transcript.splitlines()
+            if line.startswith("user: ")
+        ]
+        parts = []
+        if order_ids:
+            parts.append(f"Orders discussed: {', '.join(order_ids)}.")
+        if requests:
+            parts.append("Recent user requests: " + "; ".join(requests[-3:]) + ".")
+        return AIMessage(" ".join(parts) or "No relevant history.")
 
     # --- router ----------------------------------------------------------
 
@@ -179,9 +216,9 @@ def _parse(message: ToolMessage) -> dict:
 
 
 def _find_order_id(messages: list[BaseMessage]) -> str | None:
-    """Most recent order id mentioned by the user or the assistant in this thread."""
+    """Most recent order id mentioned in the thread, including its compacted summary."""
     for message in reversed(messages):
-        if isinstance(message, HumanMessage | AIMessage) and (
+        if isinstance(message, HumanMessage | AIMessage | SystemMessage) and (
             match := UUID_RE.search(message.text)
         ):
             return match.group(0).lower()

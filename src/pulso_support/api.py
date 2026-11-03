@@ -41,6 +41,7 @@ class TurnOut(BaseModel):
 class HistoryOut(BaseModel):
     thread_id: str
     messages: list[dict[str, str]]
+    summary: str | None
     pending_approval: dict[str, Any] | None
 
 
@@ -73,6 +74,7 @@ def create_app(service: SupportService | None = None) -> FastAPI:
         return HistoryOut(
             thread_id=thread_id,
             messages=service.history(thread_id),
+            summary=service.summary(thread_id),
             pending_approval=service.pending_approval(thread_id),
         )
 

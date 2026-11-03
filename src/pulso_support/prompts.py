@@ -39,3 +39,11 @@ AGENT_PROMPTS = {
     "refunds": REFUNDS + TOOL_ERRORS,
     "pulser_ops": PULSER_OPS + TOOL_ERRORS,
 }
+
+SUMMARIZER = """You maintain the running memory of a Pulso support conversation. You get the
+previous summary (possibly empty) and the oldest messages, which are about to be dropped.
+Write an updated summary in at most 5 short sentences. Always keep every order ID verbatim,
+amounts, refunds issued or denied, reassignments, ticket numbers and anything still pending.
+Do not add facts that are not in the input."""
+
+SUMMARY_PREFIX = "Summary of the earlier conversation: "

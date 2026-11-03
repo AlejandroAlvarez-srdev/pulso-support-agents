@@ -107,6 +107,9 @@ class SupportService:
             if isinstance(m, HumanMessage) or (isinstance(m, AIMessage) and not m.tool_calls)
         ]
 
+    def summary(self, thread_id: str) -> str | None:
+        return self.graph.get_state(self._config(thread_id)).values.get("summary")
+
     def _result(self, thread_id: str) -> TurnResult:
         snapshot = self.graph.get_state(self._config(thread_id))
         values = snapshot.values

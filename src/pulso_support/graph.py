@@ -21,6 +21,7 @@ from langchain_core.messages import (
     AnyMessage,
     BaseMessage,
     HumanMessage,
+    RemoveMessage,
     SystemMessage,
     ToolMessage,
 )
@@ -62,6 +63,8 @@ class SupportState(TypedDict, total=False):
     # Agent invocations in the current user turn; reset by the router.
     steps: int
     ticket_id: str | None
+    # Running summary of turns removed from `messages` by compaction.
+    summary: str | None
 
 
 class RefundDecision(BaseModel):
@@ -136,6 +139,53 @@ def guard_output(state: SupportState) -> dict:
     return {"messages": [AIMessage(redacted, id=last.id)]}
 
 
+def _render(messages: list[BaseMessage]) -> str:
+    lines = []
+    for m in messages:
+        if isinstance(m, HumanMessage):
+            lines.append(f"user: {m.text}")
+        elif isinstance(m, AIMessage) and m.tool_calls:
+            calls = ", ".join(f"{c['name']}({json.dumps(c['args'])})" for c in m.tool_calls)
+            lines.append(f"assistant called: {calls}")
+        elif isinstance(m, AIMessage):
+            lines.append(f"assistant: {m.text}")
+        elif isinstance(m, ToolMessage):
+            lines.append(f"tool {m.name}: {m.text[:300]}")
+    return "\n".join(lines)
+
+
+def compaction_cut(messages: list[BaseMessage], keep_last: int) -> int:
+    """Index where the kept window starts. Always a user message, so an assistant
+    tool call is never separated from its tool results."""
+    humans = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    fitting = [i for i in humans if len(messages) - i <= keep_last]
+    return fitting[0] if fitting else humans[-1]
+
+
+def _make_compactor(model: BaseChatModel, settings: Settings) -> Callable[[SupportState], dict]:
+    def compact(state: SupportState) -> dict:
+        messages = state["messages"]
+        if len(messages) <= settings.summarize_after_messages:
+            return {}
+        cut = compaction_cut(messages, settings.keep_last_messages)
+        if cut == 0:
+            return {}
+        dropped = messages[:cut]
+        previous = state.get("summary") or "(none)"
+        reply = model.invoke(
+            [
+                SystemMessage(prompts.SUMMARIZER),
+                HumanMessage(f"Previous summary: {previous}\n\nMessages:\n{_render(dropped)}"),
+            ]
+        )
+        return {
+            "summary": reply.text.strip(),
+            "messages": [RemoveMessage(id=m.id) for m in dropped],
+        }
+
+    return compact
+
+
 def _make_router(model: BaseChatModel) -> Callable[[SupportState], dict]:
     def router(state: SupportState) -> dict:
         last_human = _last_human(state["messages"])
@@ -152,7 +202,8 @@ def _make_agent(
     system = SystemMessage(prompts.AGENT_PROMPTS[name])
 
     def agent(state: SupportState) -> dict:
-        reply = bound.invoke([system, *agent_view(state["messages"])])
+        memory = [SystemMessage(prompts.SUMMARY_PREFIX + s)] if (s := state.get("summary")) else []
+        reply = bound.invoke([system, *memory, *agent_view(state["messages"])])
         return {"messages": [reply], "steps": state.get("steps", 0) + 1}
 
     agent.__name__ = name
@@ -256,6 +307,7 @@ def build_support_graph(
     graph = StateGraph(SupportState)
 
     graph.add_node("guard_input", guard_input)
+    graph.add_node("compact", _make_compactor(model, settings))
     graph.add_node("router", _make_router(model))
     graph.add_node("escalation", _make_escalation(backend, settings.max_agent_steps))
     graph.add_node("out_of_scope", out_of_scope)
@@ -264,9 +316,10 @@ def build_support_graph(
     graph.add_edge(START, "guard_input")
     graph.add_conditional_edges(
         "guard_input",
-        lambda s: "guard_output" if s.get("route") == "blocked" else "router",
-        ["router", "guard_output"],
+        lambda s: "guard_output" if s.get("route") == "blocked" else "compact",
+        ["compact", "guard_output"],
     )
+    graph.add_edge("compact", "router")
     graph.add_conditional_edges(
         "router",
         lambda s: s["route"],
