@@ -28,6 +28,7 @@ dev = [
     "opentelemetry-api==1.45.2",
     "opentelemetry-sdk==1.45.2",
     "pytest==9.2.0",
+    "hypothesis==6.170.14",
     "httpx==0.28.1",
     "ruff==0.17.3",
 ]

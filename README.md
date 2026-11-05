@@ -30,7 +30,7 @@ Anthropic or OpenAI with two environment variables.
 
 <table>
   <tr>
-    <td align="center" width="25%"><b>117, fully offline</b><br>Tests</td>
+    <td align="center" width="25%"><b>123, fully offline</b><br>Tests</td>
     <td align="center" width="25%"><b>31 cases · 9 categories</b><br>Evals</td>
     <td align="center" width="25%"><b>PII redaction, injection refusal</b><br>Safety</td>
     <td align="center" width="25%"><b>Checkpoints + idempotent refunds</b><br>Durability</td>
@@ -158,9 +158,12 @@ class SupportState(TypedDict, total=False):
 **API**
 
 - **Streaming redacts without splitting matches.** SSE token events pass through a
-  `StreamingRedactor`. It holds back the last word, plus any digits before it, until more
-  text arrives, so a phone number is never cut in half. Streamed text equals the final
-  reply. The turn runs in its own thread and the response only relays events, so a client
+  `StreamingRedactor`. It holds back the last word, or any run that could still become a
+  phone number, until more text arrives, so a phone number is never cut in half. Streamed
+  text equals the final reply. A Hypothesis property checks that claim on generated text
+  cut at generated points. It found that the redactor used to release `ana` from
+  `ana2026-10-30 55` and then redact the held-back digits as a phone number, which the
+  batch pass, seeing the letter in front, does not. The turn runs in its own thread and the response only relays events, so a client
   that disconnects mid-stream doesn't leave the thread half-way through a turn.
 - **Rate limits are per thread and per process.** A token bucket per `thread_id` stops one
   runaway client. With several replicas each keeps its own buckets; a shared store like
@@ -253,7 +256,7 @@ docker run -p 8000:8000 -v pulso-data:/data pulso-support-agents
 ## Testing and evals
 
 ```bash
-pytest                              # 117 tests, no network, no API key
+pytest                              # 123 tests, no network, no API key
 ruff check . && ruff format --check .
 python -m pulso_support.evals --min-pass-rate 1.0 --json eval-report.json
 python -m pulso_support.evals --category adversarial
@@ -270,6 +273,9 @@ The tests cover:
   redaction.
 - **Reliability:** retries, timeouts and backoff with fault injection; idempotent refunds,
   including a crash-and-resume across processes.
+- **Properties (Hypothesis):** streamed redaction equals batch redaction for any token
+  split, redaction is idempotent, and order IDs survive whatever text surrounds them.
+  1,000 examples per property by default; `HYPOTHESIS_PROFILE=stress` runs 50,000.
 - **API:** SSE streaming, including PII-safe token redaction; tracing (span tree,
   interrupts, JSONL, OpenTelemetry hierarchy and timestamps); rate limiting; the cycle guard.
 

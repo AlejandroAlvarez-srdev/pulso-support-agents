@@ -16,10 +16,16 @@ import re
 EMAIL_PLACEHOLDER = "[email redacted]"
 PHONE_PLACEHOLDER = "[phone redacted]"
 
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# The fullwidth at sign (U+FF20) renders like '@' and is the cheapest way around
+# a plain regex.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+[@\uff20][A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # Candidate runs of digits and phone punctuation; validated by digit count below.
-# The lookarounds keep UUID segments (bounded by '-' or hex letters) out.
-_PHONE_RE = re.compile(r"(?<![\w-])\+?\(?\d[\d\s().-]{6,}\d(?![\w-])")
+# The lookarounds keep UUID segments (bounded by '-' or hex letters) out, and a
+# run touching ':' and a digit on either side is part of a timestamp
+# ("2026-10-30 14:30"), not a phone. Keeping both sides symmetric makes
+# redaction idempotent: redacting one run never exposes its neighbour.
+_PHONE_START = r"(?<![\w-])(?<!\d:)\+?\(?\d"
+_PHONE_RE = re.compile(_PHONE_START + r"[\d\s().-]{6,}\d(?![\w-]|:\d)")
 _PHONE_DIGITS = range(10, 16)
 
 _INJECTION_PATTERNS = [
@@ -59,9 +65,14 @@ def detect_injection(text: str) -> str | None:
     return match.group(0) if match else None
 
 
-# Trailing text that could still grow into a phone number or email: a run of
-# phone characters (digits, spaces, punctuation) followed by the last partial word.
-_UNSAFE_TAIL = re.compile(r"[\d\s().+-]*\S*$")
+# Trailing text that could still grow into a phone number or email, or change how
+# one is matched. Either the last word, or a phone candidate that runs to the end
+# of the buffer, whichever starts first. The candidate starts where the phone
+# pattern itself could start (its lookbehind included), not at a space: in
+# "$349.00 2026-10-30" the batch pattern matches from the 3, and in
+# "ana2026-10-30 55" it can't match at all. Cutting anywhere else would redact
+# the held-back text without the context that decides whether it is a phone.
+_UNSAFE_TAIL = re.compile(_PHONE_START + r"[\d\s().-]*\S*$|(?<!\S)\S*$")
 
 
 class StreamingRedactor:

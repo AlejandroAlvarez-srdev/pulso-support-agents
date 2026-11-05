@@ -15,6 +15,8 @@ from pulso_support.llm import ScriptedSupportModel
         ("call me at +52 55 1234 5678 today", "call me at [phone redacted] today"),
         ("my cell is (55) 1234-5678", "my cell is [phone redacted]"),
         ("whatsapp 5512345678", "whatsapp [phone redacted]"),
+        ("write to ana\uff20example.com", "write to [email redacted]"),
+        ("call 5512345678: anytime", "call [phone redacted]: anytime"),
     ],
 )
 def test_redacts_emails_and_phone_numbers(text, expected):
@@ -27,6 +29,7 @@ def test_redacts_emails_and_phone_numbers(text, expected):
         f"where is {fx.ORDER_DELIVERED}?",
         "refund 120 MXN, the order total was $349.00",
         "it arrived at 14:30 on 30-10-2026",
+        "delivered 2026-10-30 14:30:05",
     ],
 )
 def test_leaves_order_ids_amounts_and_dates_alone(text):

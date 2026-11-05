@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 
 import pytest
+from hypothesis import settings
 
 from pulso_support.backend import FakePulsoBackend
 
 FIXED_NOW = datetime(2026, 10, 30, 18, 0, tzinfo=UTC)
+
+settings.register_profile("default", max_examples=1000, deadline=None)
+settings.register_profile("stress", max_examples=50_000, deadline=None)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 
 @pytest.fixture
