@@ -1,6 +1,6 @@
 <p align="center"><img src="assets/banner.svg" alt="pulso-support-agents" width="100%"></p>
 
-<p align="center"><a href="https://github.com/AlejandroAlvarez-srdev/pulso-support-agents/actions/workflows/ci.yml"><img src="https://github.com/AlejandroAlvarez-srdev/pulso-support-agents/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <img src="https://img.shields.io/badge/23_commitsLangGraph-1C3C3C?style=for-the-badge&logo=langchain&logoColor=white" alt="LangGraph"> <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"> <img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI"> <img src="https://img.shields.io/badge/OpenTelemetry-000000?style=for-the-badge&logo=opentelemetry&logoColor=white" alt="OpenTelemetry"> <img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker"> <img src="https://img.shields.io/badge/GitHub_Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white" alt="GitHub Actions"> <img src="https://img.shields.io/badge/22_commits-6a178c?style=for-the-badge" alt="23 commits"></p>
+<p align="center"><a href="https://github.com/AlejandroAlvarez-srdev/pulso-support-agents/actions/workflows/ci.yml"><img src="https://github.com/AlejandroAlvarez-srdev/pulso-support-agents/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <img src="https://img.shields.io/badge/LangGraph-1C3C3C?style=for-the-badge&logo=langchain&logoColor=white" alt="LangGraph"> <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"> <img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI"> <img src="https://img.shields.io/badge/OpenTelemetry-000000?style=for-the-badge&logo=opentelemetry&logoColor=white" alt="OpenTelemetry"> <img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker"> <img src="https://img.shields.io/badge/GitHub_Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white" alt="GitHub Actions"> <img src="https://img.shields.io/badge/22_commits-6a178c?style=for-the-badge" alt="23 commits"></p>
 
 <h1 align="center">pulso-support-agents</h1>
 <!-- /header -->
@@ -30,7 +30,7 @@ Anthropic or OpenAI with two environment variables.
 
 <table>
   <tr>
-    <td align="center" width="25%"><b>123, fully offline</b><br>Tests</td>
+    <td align="center" width="25%"><b>137, fully offline</b><br>Tests</td>
     <td align="center" width="25%"><b>31 cases · 9 categories</b><br>Evals</td>
     <td align="center" width="25%"><b>PII redaction, injection refusal</b><br>Safety</td>
     <td align="center" width="25%"><b>Checkpoints + idempotent refunds</b><br>Durability</td>
@@ -81,6 +81,7 @@ flowchart TD
 | `service.py` | Thread facade (send, resume, stream, history, traces) used by the API, evals and demo. |
 | `ratelimit.py`, `api.py` | Per-thread token bucket and the FastAPI wrapper. |
 | `evals.py`, `evals/cases.yaml` | Eval harness and 31 categorised cases. |
+| `guardrail_evals.py`, `evals/guardrails.yaml` | Labelled corpus and scorer for the injection screen and PII redaction. |
 
 ### State
 
@@ -112,7 +113,8 @@ class SupportState(TypedDict, total=False):
   reaches the LLM or the checkpoint. It also refuses messages that try to override
   instructions or name internal tool arguments, without calling the model. `guard_output`
   redacts every reply again. Off-topic requests get an `out_of_scope` refusal instead of a
-  support ticket. The injection screen is a pattern list and will miss paraphrases. That's
+  support ticket. The injection screen is a pattern list and will miss paraphrases (see
+  [Guardrail evals](#guardrail-evals) for what it catches and what it doesn't). That's
   why it's only the first layer: the approval gate and the backend's own checks hold even
   when it is bypassed. The `social-engineering-skip-review` and
   `inflated-amount-blocked-by-backend` eval cases show this.
@@ -256,10 +258,11 @@ docker run -p 8000:8000 -v pulso-data:/data pulso-support-agents
 ## Testing and evals
 
 ```bash
-pytest                              # 123 tests, no network, no API key
+pytest                              # 137 tests, no network, no API key
 ruff check . && ruff format --check .
 python -m pulso_support.evals --min-pass-rate 1.0 --json eval-report.json
 python -m pulso_support.evals --category adversarial
+python -m pulso_support.guardrail_evals --strict --json guardrail-report.json
 ```
 
 The tests cover:
@@ -298,6 +301,44 @@ not be stored, and the amount actually refunded per order. The report gives per-
 pass rates. With the scripted model the suite is a CI regression gate (31/31). With a real
 model it measures routing, tool use and robustness.
 
+### Guardrail evals
+
+The conversation evals check that a blocked message is blocked. They don't say how
+much the injection screen misses, or how often it refuses a normal customer.
+`evals/guardrails.yaml` is a labelled corpus for that: 29 attacks and 29 benign
+messages, in English and Spanish, and 26 PII and must-keep strings. The benign
+messages are written to sit close to the attacks, like "don't ignore the delivery
+instructions", "you are now my favourite app" and "ignora la dirección vieja", so the
+false-positive rate means something. `guardrail_evals` scores the deterministic
+guardrails against it. These are counts on a fixed corpus, so they are the same on every
+machine:
+
+| | Before | After |
+| --- | --- | --- |
+| Injection recall (29 attacks) | 34.5% (10) | 86.2% (25) |
+| Injection precision | 83.3% | 100% |
+| False positives (29 benign) | 6.9% (2) | 0% |
+| PII recall (15 strings) | 86.7% (13) | 93.3% (14) |
+| Must-keep strings mangled (11) | 9.1% (1) | 0% |
+
+"Before" is the screen as it was when the corpus was written. The changes:
+- Matching runs on a normalised copy of the text: NFKC (fullwidth letters), invisible
+  format characters dropped (zero-width spaces, soft hyphens), accents stripped.
+- Spanish patterns.
+- Override verbs ("ignore", "forget", "olvida") only count when they target the
+  assistant's own instructions ("your", "all previous", "anteriores"). Role changes only
+  count when they name a role. This removed both false positives.
+- Fullwidth `＠` in emails, and timestamps like `2026-10-30 14:30:05` are no longer
+  redacted as phone numbers.
+
+The four attacks still missed are marked `known_miss` in the corpus: a Cyrillic
+homoglyph, letters separated by spaces, and two social-engineering paraphrases ("my
+supervisor already approved this"). Spelled-out emails ("ana dot torres at example dot
+com") still leak. Catching these needs a confusables table or a model-based classifier.
+The approval gate and the backend's checks are what hold in those cases.
+`--strict` fails on any miss, false positive, leak or mangled string not marked
+`known_miss`, and CI runs it.
+
 ## What this demonstrates
 
 - **Orchestration:** multi-agent LangGraph with typed shared state, a supervisor/router,
@@ -305,7 +346,8 @@ model it measures routing, tool use and robustness.
 - **Human-in-the-loop:** `interrupt()` / `Command(resume=...)` with approvals enforced by
   the graph, and refunds that are idempotent across retries, resumes and processes.
 - **Safety:** deterministic guardrails (PII redaction in and out, including while
-  streaming), an injection screen, and defense in depth checked by adversarial evals.
+  streaming), an injection screen with measured recall and false-positive rate on a
+  labelled bilingual corpus, and defense in depth checked by adversarial evals.
 - **Reliability engineering:** timeouts, retry policies chosen by idempotency, fault
   injection, and errors surfaced to the agent instead of raised.
 - **Memory:** durable conversations with checkpointers keyed by `thread_id`, plus summary

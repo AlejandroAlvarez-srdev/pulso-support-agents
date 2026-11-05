@@ -23,6 +23,7 @@ htmlcov/
 *.db
 .env
 eval-report.json
+guardrail-report.json
 
 # OS / editors
 .DS_Store

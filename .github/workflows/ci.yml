@@ -32,10 +32,14 @@ jobs:
       - run: pytest
       - name: Evals (scripted model, must stay at 100%)
         run: python -m pulso_support.evals --min-pass-rate 1.0 --json eval-report.json
+      - name: Guardrail evals (no new misses, false positives or leaks)
+        run: python -m pulso_support.guardrail_evals --strict --json guardrail-report.json
       - uses: actions/upload-artifact@v4
         with:
           name: eval-report-${{ matrix.python-version }}
-          path: eval-report.json
+          path: |
+            eval-report.json
+            guardrail-report.json
 
   docker:
     runs-on: ubuntu-latest
